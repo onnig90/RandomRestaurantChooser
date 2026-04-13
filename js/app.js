@@ -1,5 +1,6 @@
 let isGuest = true;
 let currentUserLoc = null;
+let locationIsAutoDetected = false;
 let mapPin = null;
 let googleMap = null;
 
@@ -56,12 +57,19 @@ function initFilters() {
 
 function initLocation() {
     const locInput = document.getElementById('location-input');
+
+    // Mark location as manually edited when the user types in the field
+    locInput.addEventListener('input', () => {
+        locationIsAutoDetected = false;
+    });
+
     if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
             (position) => {
                 const { latitude, longitude } = position.coords;
                 currentUserLoc = { lat: latitude, lng: longitude };
-                
+                locationIsAutoDetected = true;
+
                 if (window.google && google.maps && google.maps.Geocoder) {
                     const geocoder = new google.maps.Geocoder();
                     geocoder.geocode({ location: currentUserLoc }, (results, status) => {
@@ -72,7 +80,7 @@ function initLocation() {
                         }
                     });
                 } else {
-                    locInput.value = `Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)}`;
+                    locInput.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
                 }
             },
             (error) => {
@@ -95,7 +103,7 @@ async function onSpinClicked() {
         location: document.getElementById('location-input').value,
         cuisine: document.getElementById('cuisine-select').value,
         distance: parseInt(document.getElementById('distance-input').value, 10),
-        prices: Array.from(document.querySelectorAll('.price-btn.active')).map(b => parseInt(b.dataset.val)),
+        prices: Array.from(document.querySelectorAll('.price-btn.active')).map(b => parseInt(b.dataset.val, 10)),
         openNow: document.getElementById('open-now-toggle').checked
     };
 
@@ -212,8 +220,12 @@ async function fetchRestaurants(filters) {
     let lat = null;
     let lng = null;
 
-    // If there is an address typed, geocode it. If empty, rely on currentUserLoc.
-    if (filters.location && window.google && google.maps && google.maps.Geocoder) {
+    // If the location was auto-detected (not manually edited), use the coords directly.
+    // Only geocode when the user has typed a custom address.
+    if (locationIsAutoDetected && currentUserLoc) {
+        lat = currentUserLoc.lat;
+        lng = currentUserLoc.lng;
+    } else if (filters.location && window.google && google.maps && google.maps.Geocoder) {
         const geocoder = new google.maps.Geocoder();
         const results = await new Promise(resolve => {
             geocoder.geocode({ address: filters.location }, (res, status) => {
@@ -224,13 +236,18 @@ async function fetchRestaurants(filters) {
             lat = results[0].geometry.location.lat();
             lng = results[0].geometry.location.lng();
         }
+        // Geocode failed — fall back to last known GPS coords
+        if (!lat && currentUserLoc) {
+            lat = currentUserLoc.lat;
+            lng = currentUserLoc.lng;
+        }
     } else if (currentUserLoc) {
         lat = currentUserLoc.lat;
         lng = currentUserLoc.lng;
     }
 
     if (!lat || !lng) {
-        throw new Error("Could not determine your location securely. Please specify an exact address.");
+        throw new Error("Could not determine your location. Please enter an address manually.");
     }
 
     const params = new URLSearchParams({ lat, lng });
@@ -241,7 +258,8 @@ async function fetchRestaurants(filters) {
         params.set('maxDistance', filters.distance * 1000); // km to meters
     }
     if (filters.prices && filters.prices.length > 0) {
-        params.set('priceRange', filters.prices[0] || 1);
+        params.set('minPrice', Math.min(...filters.prices));
+        params.set('maxPrice', Math.max(...filters.prices));
     }
     if (filters.openNow) {
         params.set('openNow', 'true');
@@ -249,7 +267,7 @@ async function fetchRestaurants(filters) {
 
     const res = await fetch(`/api/restaurants/search?${params.toString()}`);
     if (!res.ok) throw new Error("Failed to fetch restaurants");
-    
+
     const data = await res.json();
     return data.restaurants || [];
 }
