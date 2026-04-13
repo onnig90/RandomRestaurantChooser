@@ -1,0 +1,23 @@
+{
+  "name": "random-restaurant-chooser",
+  "version": "1.0.0",
+  "description": "Backend for Random Restaurant Chooser — Vercel serverless",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "db:init": "node -r dotenv/config db/migrate.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "node-fetch": "^2.7.0",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.5",
+    "vercel": "^37.0.0"
+  }
+}
