@@ -10,6 +10,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initLocation();
     
     document.getElementById('btn-spin').addEventListener('click', onSpinClicked);
+    document.getElementById('btn-auth-guest').addEventListener('click', onAuthGuestClicked);
+    document.getElementById('btn-auth-user').addEventListener('click', onLoadFiltersClicked);
     document.getElementById('btn-itinerary').addEventListener('click', () => {
         const ms = document.getElementById('map-section');
         ms.classList.remove('hidden');
@@ -20,8 +22,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-share').addEventListener('click', () => {
         if (window.currentWinner && typeof shareRestaurant === 'function') {
             shareRestaurant(window.currentWinner);
+        } else {
+            showToast('Spin the wheel first to share a restaurant.');
         }
     });
+    document.getElementById('btn-signup-prompt').addEventListener('click', onAuthGuestClicked);
+    document.getElementById('btn-save-filters').addEventListener('click', onSaveFiltersClicked);
 
     // Distance slider update
     document.getElementById('distance-input').addEventListener('input', (e) => {
@@ -93,6 +99,55 @@ function initLocation() {
     }
 }
 
+function onAuthGuestClicked() {
+    showToast('Authentication UI is not connected yet. We can wire sign up and login next.');
+}
+
+function onLoadFiltersClicked() {
+    showToast('Saved filter loading is not connected in the UI yet.');
+}
+
+function onSaveFiltersClicked() {
+    showToast('Saving filters from the UI is not connected yet.');
+}
+
+async function geocodeAddress(address) {
+    if (!address) return null;
+
+    const coordMatch = address.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (coordMatch) {
+        return {
+            lat: parseFloat(coordMatch[1]),
+            lng: parseFloat(coordMatch[2]),
+        };
+    }
+
+    if (!(window.google && google.maps && google.maps.Geocoder)) {
+        return null;
+    }
+
+    const geocoder = new google.maps.Geocoder();
+
+    return await Promise.race([
+        new Promise((resolve) => {
+            geocoder.geocode({ address }, (results, status) => {
+                if (status === 'OK' && results && results[0]) {
+                    resolve({
+                        lat: results[0].geometry.location.lat(),
+                        lng: results[0].geometry.location.lng(),
+                    });
+                    return;
+                }
+
+                resolve(null);
+            });
+        }),
+        new Promise((resolve) => {
+            setTimeout(() => resolve(null), 5000);
+        }),
+    ]);
+}
+
 async function onSpinClicked() {
     const btn = document.getElementById('btn-spin');
     btn.disabled = true;
@@ -132,10 +187,10 @@ async function onSpinClicked() {
     } catch (err) {
         showToast("Error finding restaurants");
         console.error(err);
+    } finally {
+        btn.disabled = false;
+        btn.innerText = '✦ Spin the wheel';
     }
-
-    btn.disabled = false;
-    btn.innerText = '✦ Spin the wheel';
 }
 
 function displayWinner(restaurant) {
@@ -225,16 +280,11 @@ async function fetchRestaurants(filters) {
     if (locationIsAutoDetected && currentUserLoc) {
         lat = currentUserLoc.lat;
         lng = currentUserLoc.lng;
-    } else if (filters.location && window.google && google.maps && google.maps.Geocoder) {
-        const geocoder = new google.maps.Geocoder();
-        const results = await new Promise(resolve => {
-            geocoder.geocode({ address: filters.location }, (res, status) => {
-                resolve(status === 'OK' ? res : null);
-            });
-        });
-        if (results && results[0]) {
-            lat = results[0].geometry.location.lat();
-            lng = results[0].geometry.location.lng();
+    } else if (filters.location) {
+        const coords = await geocodeAddress(filters.location);
+        if (coords) {
+            lat = coords.lat;
+            lng = coords.lng;
         }
         // Geocode failed — fall back to last known GPS coords
         if (!lat && currentUserLoc) {
