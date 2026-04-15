@@ -453,10 +453,12 @@ async function geocodeAddress(address) {
     return location;
 }
 
+const LOADING_DOTS_HTML = '<span class="btn-loading"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>';
+
 async function onSpinClicked() {
     const button = document.getElementById('btn-spin');
     button.disabled = true;
-    button.innerText = 'Fetching...';
+    button.innerHTML = LOADING_DOTS_HTML;
 
     try {
         const filters = collectFiltersFromUi();
@@ -470,7 +472,7 @@ async function onSpinClicked() {
         window.ITEMS = restaurants;
         if (typeof drawPlaceholderWheel === 'function') drawPlaceholderWheel();
 
-        button.innerText = 'Spinning...';
+        button.innerHTML = LOADING_DOTS_HTML;
         const winner = await window.spin();
 
         if (winner) {
@@ -481,7 +483,7 @@ async function onSpinClicked() {
         console.error(err);
     } finally {
         button.disabled = false;
-        button.innerText = '✦ Spin the wheel';
+        button.innerHTML = '✦ Spin the wheel';
     }
 }
 
