@@ -23,6 +23,7 @@ module.exports = async function handler(req, res) {
     const dao = new RestaurantDAO();
     const restaurants = await dao.GetRestaurants({ lat: parsedLat, lng: parsedLng }, filter);
 
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
     return res.status(200).json({ restaurants });
   } catch (err) {
     console.error('restaurants/search error:', err);

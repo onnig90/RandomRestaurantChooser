@@ -6,9 +6,11 @@ let authToken = null;
 let currentUser = null;
 let currentUserLoc = null;
 let locationIsAutoDetected = false;
+let lastUiSearchKey = null;
 let lastSearchKey = null;
 let lastSearchResults = null;
 let lastSearchAt = 0;
+const geocodeCache = new Map();
 
 const SEARCH_RESULT_CACHE_TTL_MS = 3 * 60 * 1000;
 
@@ -296,18 +298,29 @@ async function reverseGeocodeCoordinates(lat, lng) {
 async function geocodeAddress(address) {
     if (!address) return null;
 
+    const cacheKey = String(address).trim().toLowerCase();
+    if (geocodeCache.has(cacheKey)) {
+        return geocodeCache.get(cacheKey);
+    }
+
     const coordMatch = address.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
     if (coordMatch) {
-        return {
+        const coordinates = {
             lat: parseFloat(coordMatch[1]),
             lng: parseFloat(coordMatch[2]),
             displayName: address,
         };
+        geocodeCache.set(cacheKey, coordinates);
+        return coordinates;
     }
 
     const params = new URLSearchParams({ q: address });
     const data = await apiRequest(`/api/location/geocode?${params.toString()}`);
-    return data.location || null;
+    const location = data.location || null;
+    if (location) {
+        geocodeCache.set(cacheKey, location);
+    }
+    return location;
 }
 
 async function onSpinClicked() {
@@ -316,7 +329,8 @@ async function onSpinClicked() {
     button.innerText = 'Fetching...';
 
     try {
-        const restaurants = await fetchRestaurants(collectFiltersFromUi());
+        const filters = collectFiltersFromUi();
+        const restaurants = await fetchRestaurants(filters, createUiSearchKey(filters));
 
         if (!restaurants || restaurants.length === 0) {
             showToast('No restaurants match your filters. Try widening your search.');
@@ -339,6 +353,23 @@ async function onSpinClicked() {
         button.disabled = false;
         button.innerText = '✦ Spin the wheel';
     }
+}
+
+function createUiSearchKey(filters) {
+    const activePrices = Array.isArray(filters.prices)
+        ? [...filters.prices].sort((left, right) => left - right)
+        : [];
+    const locationKey = locationIsAutoDetected && currentUserLoc
+        ? `geo:${currentUserLoc.lat.toFixed(4)},${currentUserLoc.lng.toFixed(4)}`
+        : `text:${String(filters.location || '').trim().toLowerCase()}`;
+
+    return JSON.stringify({
+        locationKey,
+        cuisine: filters.cuisine || 'any',
+        distance: filters.distance || 5,
+        prices: activePrices,
+        openNow: Boolean(filters.openNow),
+    });
 }
 
 function collectFiltersFromUi() {
@@ -465,7 +496,18 @@ function showToast(message) {
     }, 3000);
 }
 
-async function fetchRestaurants(filters) {
+async function fetchRestaurants(filters, uiSearchKey) {
+    const hasFreshUiCachedResults =
+        uiSearchKey &&
+        lastUiSearchKey === uiSearchKey &&
+        Array.isArray(lastSearchResults) &&
+        lastSearchResults.length > 0 &&
+        Date.now() - lastSearchAt < SEARCH_RESULT_CACHE_TTL_MS;
+
+    if (hasFreshUiCachedResults) {
+        return lastSearchResults;
+    }
+
     let lat = null;
     let lng = null;
 
@@ -524,6 +566,7 @@ async function fetchRestaurants(filters) {
 
     try {
         const data = await apiRequest(`/api/restaurants/search?${searchKey}`);
+        lastUiSearchKey = uiSearchKey || null;
         lastSearchKey = searchKey;
         lastSearchResults = data.restaurants || [];
         lastSearchAt = Date.now();
@@ -531,7 +574,7 @@ async function fetchRestaurants(filters) {
         return data.restaurants || [];
     } catch (err) {
         if (
-            lastSearchKey === searchKey &&
+            ((uiSearchKey && lastUiSearchKey === uiSearchKey) || lastSearchKey === searchKey) &&
             Array.isArray(lastSearchResults) &&
             lastSearchResults.length > 0
         ) {
