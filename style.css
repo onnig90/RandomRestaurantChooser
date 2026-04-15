@@ -49,6 +49,8 @@ h1 { font-weight: 900; }
     width: 100%;
     display: flex;
     justify-content: center;
+    flex-wrap: wrap;
+    gap: 12px;
 }
 
 /* BUTTONS */
@@ -294,7 +296,13 @@ canvas#wheel {
     transition: all var(--transition-reveal);
 }
 .map-section.show { opacity: 1; transform: translateY(0); }
-.map-container { width: 100%; height: 100%; background-color: #222; }
+.map-container {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background-color: #222;
+    border: 0;
+}
 
 .hidden { display: none !important; }
 

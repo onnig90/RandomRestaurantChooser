@@ -1,24 +1,28 @@
+const AUTH_TOKEN_KEY = 'rrc_auth_token';
+const AUTH_USER_KEY = 'rrc_auth_user';
+
 let isGuest = true;
+let authToken = null;
+let currentUser = null;
 let currentUserLoc = null;
 let locationIsAutoDetected = false;
-let mapPin = null;
-let googleMap = null;
 
 document.addEventListener('DOMContentLoaded', () => {
+    hydrateAuth();
     initFilters();
     initAuthBar();
     initLocation();
-    
+
     document.getElementById('btn-spin').addEventListener('click', onSpinClicked);
     document.getElementById('btn-auth-guest').addEventListener('click', onAuthGuestClicked);
     document.getElementById('btn-auth-user').addEventListener('click', onLoadFiltersClicked);
     document.getElementById('btn-itinerary').addEventListener('click', () => {
-        const ms = document.getElementById('map-section');
-        ms.classList.remove('hidden');
-        setTimeout(() => ms.classList.add('show'), 10);
-        ms.scrollIntoView({ behavior: 'smooth' });
+        const mapSection = document.getElementById('map-section');
+        mapSection.classList.remove('hidden');
+        setTimeout(() => mapSection.classList.add('show'), 10);
+        mapSection.scrollIntoView({ behavior: 'smooth' });
     });
-    
+
     document.getElementById('btn-share').addEventListener('click', () => {
         if (window.currentWinner && typeof shareRestaurant === 'function') {
             shareRestaurant(window.currentWinner);
@@ -26,89 +30,262 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast('Spin the wheel first to share a restaurant.');
         }
     });
+
     document.getElementById('btn-signup-prompt').addEventListener('click', onAuthGuestClicked);
     document.getElementById('btn-save-filters').addEventListener('click', onSaveFiltersClicked);
 
-    // Distance slider update
-    document.getElementById('distance-input').addEventListener('input', (e) => {
-        document.getElementById('distance-val').innerText = `${e.target.value} km`;
+    document.getElementById('distance-input').addEventListener('input', (event) => {
+        document.getElementById('distance-val').innerText = `${event.target.value} km`;
     });
 
-    // Price toggle logic
-    document.querySelectorAll('.price-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.target.classList.toggle('active');
+    document.querySelectorAll('.price-btn').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.currentTarget.classList.toggle('active');
         });
     });
 });
 
+function hydrateAuth() {
+    try {
+        authToken = window.localStorage.getItem(AUTH_TOKEN_KEY);
+        const rawUser = window.localStorage.getItem(AUTH_USER_KEY);
+        currentUser = rawUser ? JSON.parse(rawUser) : null;
+        isGuest = !(authToken && currentUser);
+    } catch (err) {
+        console.error('Failed to restore auth session', err);
+        authToken = null;
+        currentUser = null;
+        isGuest = true;
+    }
+}
+
+function persistAuth(token, user) {
+    authToken = token;
+    currentUser = user;
+    isGuest = false;
+
+    window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+    window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+
+    initAuthBar();
+    refreshPostSpinPrompts();
+}
+
+function clearAuth() {
+    authToken = null;
+    currentUser = null;
+    isGuest = true;
+
+    window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    window.localStorage.removeItem(AUTH_USER_KEY);
+
+    initAuthBar();
+    refreshPostSpinPrompts();
+}
+
 function initAuthBar() {
+    const guestButton = document.getElementById('btn-auth-guest');
+    const userButton = document.getElementById('btn-auth-user');
+
+    guestButton.classList.remove('hidden');
+
     if (isGuest) {
-        document.getElementById('btn-auth-guest').classList.remove('hidden');
-        document.getElementById('btn-auth-user').classList.add('hidden');
+        guestButton.innerText = 'Sign up / Log in to save your filters';
+        userButton.classList.add('hidden');
+        return;
+    }
+
+    guestButton.innerText = 'Log out';
+    userButton.innerText = currentUser && currentUser.name
+        ? `Load filters for ${currentUser.name}`
+        : 'Load filters';
+    userButton.classList.remove('hidden');
+}
+
+function refreshPostSpinPrompts() {
+    const guestPrompt = document.getElementById('guest-post-spin-prompt');
+    const userPrompt = document.getElementById('user-post-spin-prompt');
+
+    if (!guestPrompt || !userPrompt) return;
+
+    if (isGuest) {
+        guestPrompt.classList.remove('hidden');
+        userPrompt.classList.add('hidden');
     } else {
-        document.getElementById('btn-auth-guest').classList.add('hidden');
-        document.getElementById('btn-auth-user').classList.remove('hidden');
+        guestPrompt.classList.add('hidden');
+        userPrompt.classList.remove('hidden');
     }
 }
 
 function initFilters() {
-    if (typeof getSharedRestaurant === 'function') {
-        const shared = getSharedRestaurant();
-        if (shared) {
-            displayWinner(shared);
-        }
+    if (typeof getSharedRestaurant !== 'function') return;
+
+    const shared = getSharedRestaurant();
+    if (shared) {
+        displayWinner(shared);
     }
 }
 
 function initLocation() {
-    const locInput = document.getElementById('location-input');
+    const locationInput = document.getElementById('location-input');
 
-    // Mark location as manually edited when the user types in the field
-    locInput.addEventListener('input', () => {
+    locationInput.addEventListener('input', () => {
         locationIsAutoDetected = false;
     });
 
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-            (position) => {
-                const { latitude, longitude } = position.coords;
-                currentUserLoc = { lat: latitude, lng: longitude };
-                locationIsAutoDetected = true;
+    if (!navigator.geolocation) {
+        locationInput.placeholder = 'Enter your address...';
+        return;
+    }
 
-                if (window.google && google.maps && google.maps.Geocoder) {
-                    const geocoder = new google.maps.Geocoder();
-                    geocoder.geocode({ location: currentUserLoc }, (results, status) => {
-                        if (status === 'OK' && results[0]) {
-                            locInput.value = results[0].formatted_address;
-                        } else {
-                            locInput.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
-                        }
-                    });
-                } else {
-                    locInput.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
-                }
-            },
-            (error) => {
-                locInput.placeholder = 'Enter your address...';
-                showToast("Geolocation denied. Please enter address manually.");
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            const { latitude, longitude } = position.coords;
+            currentUserLoc = { lat: latitude, lng: longitude };
+            locationIsAutoDetected = true;
+
+            try {
+                const location = await reverseGeocodeCoordinates(latitude, longitude);
+                locationInput.value = location && location.displayName
+                    ? location.displayName
+                    : `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+            } catch (err) {
+                console.error('Reverse geocoding failed', err);
+                locationInput.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
             }
-        );
-    } else {
-        locInput.placeholder = 'Enter your address...';
+        },
+        () => {
+            locationInput.placeholder = 'Enter your address...';
+            showToast('Geolocation denied. Please enter address manually.');
+        }
+    );
+}
+
+async function onAuthGuestClicked() {
+    if (!isGuest) {
+        clearAuth();
+        showToast('You have been logged out.');
+        return;
+    }
+
+    const wantsSignup = window.confirm(
+        'Press OK to create a new account, or Cancel to log in to an existing one.'
+    );
+
+    try {
+        if (wantsSignup) {
+            const name = promptRequired('Enter your name');
+            const email = promptRequired('Enter your email');
+            const password = promptRequired('Create a password (minimum 8 characters)');
+            if (!name || !email || !password) return;
+
+            const phone = window.prompt('Phone number in E.164 format (optional)', '') || '';
+            const location = window.prompt(
+                'Default location (optional)',
+                document.getElementById('location-input').value || ''
+            ) || '';
+
+            const data = await apiRequest('/api/auth/register', {
+                method: 'POST',
+                body: { name, email, password, phone, location },
+            });
+
+            persistAuth(data.token, data.user);
+            showToast(`Welcome, ${data.user.name}!`);
+            return;
+        }
+
+        const email = promptRequired('Enter your email');
+        const password = promptRequired('Enter your password');
+        if (!email || !password) return;
+
+        const data = await apiRequest('/api/auth/login', {
+            method: 'POST',
+            body: { email, password },
+        });
+
+        persistAuth(data.token, data.user);
+        showToast(`Welcome back, ${data.user.name}!`);
+    } catch (err) {
+        showToast(err.message || 'Authentication failed.');
     }
 }
 
-function onAuthGuestClicked() {
-    showToast('Authentication UI is not connected yet. We can wire sign up and login next.');
+async function onLoadFiltersClicked() {
+    if (isGuest || !authToken) {
+        showToast('Log in first to load saved filters.');
+        return;
+    }
+
+    try {
+        const data = await apiRequest('/api/filters', {
+            method: 'GET',
+            requiresAuth: true,
+        });
+
+        const filters = data.filters || [];
+        if (filters.length === 0) {
+            showToast('No saved filters found for this account.');
+            return;
+        }
+
+        const selectedFilter = chooseFilter(filters);
+        if (!selectedFilter) return;
+
+        applySavedFilter(selectedFilter);
+        showToast(`Loaded ${selectedFilter.label || 'saved'} filter.`);
+    } catch (err) {
+        showToast(err.message || 'Failed to load filters.');
+    }
 }
 
-function onLoadFiltersClicked() {
-    showToast('Saved filter loading is not connected in the UI yet.');
+async function onSaveFiltersClicked() {
+    if (isGuest || !authToken) {
+        showToast('Log in first to save your filters.');
+        return;
+    }
+
+    const filters = collectFiltersFromUi();
+    const label = window.prompt(
+        'Name this filter',
+        filters.cuisine !== 'any' ? `${filters.cuisine} ${filters.distance}km` : `Nearby ${filters.distance}km`
+    );
+
+    if (label === null) return;
+
+    const activePrices = filters.prices || [];
+    const priceRange = activePrices.length > 0 ? Math.max(...activePrices) : null;
+    const isDefault = window.confirm('Make this your default filter?');
+
+    try {
+        await apiRequest('/api/filters/save', {
+            method: 'POST',
+            requiresAuth: true,
+            body: {
+                cuisine: filters.cuisine === 'any' ? null : filters.cuisine,
+                priceRange: priceRange !== null ? String(priceRange) : null,
+                minRating: null,
+                maxDistance: filters.distance * 1000,
+                openHours: filters.openNow ? 'now' : null,
+                label: label.trim() || null,
+                isDefault,
+            },
+        });
+
+        showToast('Filter saved.');
+    } catch (err) {
+        showToast(err.message || 'Failed to save filters.');
+    }
 }
 
-function onSaveFiltersClicked() {
-    showToast('Saving filters from the UI is not connected yet.');
+async function reverseGeocodeCoordinates(lat, lng) {
+    const params = new URLSearchParams({
+        lat: String(lat),
+        lng: String(lng),
+    });
+
+    const data = await apiRequest(`/api/location/geocode?${params.toString()}`);
+    return data.location || null;
 }
 
 async function geocodeAddress(address) {
@@ -119,164 +296,174 @@ async function geocodeAddress(address) {
         return {
             lat: parseFloat(coordMatch[1]),
             lng: parseFloat(coordMatch[2]),
+            displayName: address,
         };
     }
 
-    if (!(window.google && google.maps && google.maps.Geocoder)) {
-        return null;
-    }
-
-    const geocoder = new google.maps.Geocoder();
-
-    return await Promise.race([
-        new Promise((resolve) => {
-            geocoder.geocode({ address }, (results, status) => {
-                if (status === 'OK' && results && results[0]) {
-                    resolve({
-                        lat: results[0].geometry.location.lat(),
-                        lng: results[0].geometry.location.lng(),
-                    });
-                    return;
-                }
-
-                resolve(null);
-            });
-        }),
-        new Promise((resolve) => {
-            setTimeout(() => resolve(null), 5000);
-        }),
-    ]);
+    const params = new URLSearchParams({ q: address });
+    const data = await apiRequest(`/api/location/geocode?${params.toString()}`);
+    return data.location || null;
 }
 
 async function onSpinClicked() {
-    const btn = document.getElementById('btn-spin');
-    btn.disabled = true;
-    btn.innerText = 'Fetching...';
+    const button = document.getElementById('btn-spin');
+    button.disabled = true;
+    button.innerText = 'Fetching...';
 
-    // 1. Gather filters
-    const filters = {
-        location: document.getElementById('location-input').value,
-        cuisine: document.getElementById('cuisine-select').value,
-        distance: parseInt(document.getElementById('distance-input').value, 10),
-        prices: Array.from(document.querySelectorAll('.price-btn.active')).map(b => parseInt(b.dataset.val, 10)),
-        openNow: document.getElementById('open-now-toggle').checked
-    };
-
-    // 2. Fetch from backend
     try {
-        const restaurants = await fetchRestaurants(filters);
-        
+        const restaurants = await fetchRestaurants(collectFiltersFromUi());
+
         if (!restaurants || restaurants.length === 0) {
-            showToast("No restaurants match your filters — try widening your search");
-            btn.disabled = false;
-            btn.innerText = '✦ Spin the wheel';
+            showToast('No restaurants match your filters. Try widening your search.');
             return;
         }
 
-        // 3. Load items into wheel scope
         window.ITEMS = restaurants;
         if (typeof drawPlaceholderWheel === 'function') drawPlaceholderWheel();
 
-        // 4. Trigger Spin Animation
-        btn.innerText = 'Spinning...';
+        button.innerText = 'Spinning...';
         const winner = await window.spin();
-        
+
         if (winner) {
             displayWinner(winner);
         }
     } catch (err) {
-        showToast("Error finding restaurants");
+        showToast(err.message || 'Error finding restaurants.');
         console.error(err);
     } finally {
-        btn.disabled = false;
-        btn.innerText = '✦ Spin the wheel';
+        button.disabled = false;
+        button.innerText = '✦ Spin the wheel';
     }
+}
+
+function collectFiltersFromUi() {
+    return {
+        location: document.getElementById('location-input').value,
+        cuisine: document.getElementById('cuisine-select').value,
+        distance: parseInt(document.getElementById('distance-input').value, 10),
+        prices: Array.from(document.querySelectorAll('.price-btn.active')).map((button) =>
+            parseInt(button.dataset.val, 10)
+        ),
+        openNow: document.getElementById('open-now-toggle').checked,
+    };
+}
+
+function chooseFilter(filters) {
+    if (filters.length === 1) {
+        return filters[0];
+    }
+
+    const defaultIndex = Math.max(
+        0,
+        filters.findIndex((filter) => filter.is_default)
+    );
+    const list = filters
+        .map((filter, index) => `${index + 1}. ${filter.label || 'Saved filter'}`)
+        .join('\n');
+
+    const selection = window.prompt(
+        `Choose a saved filter:\n${list}`,
+        String(defaultIndex + 1)
+    );
+
+    if (selection === null) return null;
+
+    const parsedIndex = parseInt(selection, 10);
+    if (Number.isNaN(parsedIndex) || parsedIndex < 1 || parsedIndex > filters.length) {
+        return filters[defaultIndex];
+    }
+
+    return filters[parsedIndex - 1];
+}
+
+function applySavedFilter(filter) {
+    document.getElementById('cuisine-select').value = filter.cuisine || 'any';
+
+    const distanceKm = filter.max_distance
+        ? Math.max(1, Math.round(parseInt(filter.max_distance, 10) / 1000))
+        : 5;
+    document.getElementById('distance-input').value = distanceKm;
+    document.getElementById('distance-val').innerText = `${distanceKm} km`;
+
+    const openNow = filter.open_hours === 'now';
+    document.getElementById('open-now-toggle').checked = openNow;
+
+    const parsedPrice = parseInt(filter.price_range, 10);
+    if (!Number.isNaN(parsedPrice)) {
+        setPriceButtonsUpTo(parsedPrice);
+    }
+}
+
+function setPriceButtonsUpTo(maxPrice) {
+    document.querySelectorAll('.price-btn').forEach((button) => {
+        const buttonValue = parseInt(button.dataset.val, 10);
+        button.classList.toggle('active', buttonValue <= maxPrice);
+    });
 }
 
 function displayWinner(restaurant) {
     window.currentWinner = restaurant;
-    
-    // Update Result View text
+
     document.getElementById('res-name').innerText = restaurant.name;
     document.getElementById('res-rating').innerText = `${restaurant.rating || 'N/A'} ⭐`;
-    
-    const priceStr = Array(parseInt(restaurant.priceLevel) || 1).fill('$').join('');
+
+    const priceStr = Array(parseInt(restaurant.priceLevel, 10) || 1).fill('$').join('');
     document.getElementById('res-price').innerText = priceStr;
-    document.getElementById('res-addr').innerText = restaurant.address;
-    
-    // Auth specific prompts
-    if (isGuest) {
-        document.getElementById('guest-post-spin-prompt').classList.remove('hidden');
-        document.getElementById('user-post-spin-prompt').classList.add('hidden');
-    } else {
-        document.getElementById('guest-post-spin-prompt').classList.add('hidden');
-        document.getElementById('user-post-spin-prompt').classList.remove('hidden');
-    }
+    document.getElementById('res-addr').innerText = restaurant.address || 'Address unavailable';
 
-    // Reveal result details
-    const resSec = document.getElementById('result-display');
-    resSec.classList.remove('hidden');
-    setTimeout(() => resSec.classList.add('show'), 50);
+    refreshPostSpinPrompts();
 
-    // Update Map
-    const mapSec = document.getElementById('map-section');
-    if (googleMap && restaurant.lat && restaurant.lng) {
-        const pos = { lat: restaurant.lat, lng: restaurant.lng };
-        googleMap.panTo(pos);
-        if (mapPin) mapPin.setMap(null);
-        mapPin = new google.maps.Marker({
-            position: pos,
-            map: googleMap,
-            title: restaurant.name
-        });
-        
-        const encAddr = encodeURIComponent(restaurant.address);
-        document.getElementById('btn-open-itinerary').href = `https://www.google.com/maps/dir/?api=1&destination=${encAddr}`;
+    const resultSection = document.getElementById('result-display');
+    resultSection.classList.remove('hidden');
+    setTimeout(() => resultSection.classList.add('show'), 50);
+
+    updateMapPreview(restaurant);
+
+    if (restaurant.lat && restaurant.lng) {
+        document.getElementById(
+            'btn-open-itinerary'
+        ).href = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+            `${restaurant.lat},${restaurant.lng}`
+        )}`;
     }
 }
 
-window.initMapPlaceholder = function() {
-    const mapDiv = document.getElementById('map-widget');
-    if (!mapDiv) return;
-    
-    const defaultCenter = currentUserLoc || { lat: 40.7128, lng: -74.0060 };
-    
-    googleMap = new google.maps.Map(mapDiv, {
-        center: defaultCenter,
-        zoom: 14,
-        styles: [
-            { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
-            { elementType: "labels.text.stroke", stylers: [{ color: "#242f3e" }] },
-            { elementType: "labels.text.fill", stylers: [{ color: "#746855" }] },
-            { featureType: "road", elementType: "geometry", stylers: [{ color: "#38414e" }] },
-            { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#212a37" }] },
-            { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#746855" }] },
-            { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#1f2835" }] },
-            { featureType: "water", elementType: "geometry", stylers: [{ color: "#17263c" }] },
-            { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#515c6d" }] },
-            { featureType: "water", elementType: "labels.text.stroke", stylers: [{ color: "#17263c" }] }
-        ]
-    });
-};
+function updateMapPreview(restaurant) {
+    const mapFrame = document.getElementById('map-widget');
+    if (!mapFrame || !restaurant || restaurant.lat === undefined || restaurant.lng === undefined) {
+        return;
+    }
 
-function showToast(msg) {
-    const t = document.getElementById('toast');
-    t.innerText = msg;
-    t.classList.remove('hidden');
-    setTimeout(() => t.classList.add('show'), 10);
+    const lat = Number(restaurant.lat);
+    const lng = Number(restaurant.lng);
+    const delta = 0.01;
+    const bbox = [
+        lng - delta,
+        lat - delta,
+        lng + delta,
+        lat + delta,
+    ].join('%2C');
+
+    mapFrame.src =
+        `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}` +
+        `&layer=mapnik&marker=${lat}%2C${lng}`;
+}
+
+function showToast(message) {
+    const toast = document.getElementById('toast');
+    toast.innerText = message;
+    toast.classList.remove('hidden');
+    setTimeout(() => toast.classList.add('show'), 10);
     setTimeout(() => {
-        t.classList.remove('show');
-        setTimeout(() => t.classList.add('hidden'), 300);
+        toast.classList.remove('show');
+        setTimeout(() => toast.classList.add('hidden'), 300);
     }, 3000);
 }
 
-// Real backend integration
 async function fetchRestaurants(filters) {
     let lat = null;
     let lng = null;
 
-    // If the location was auto-detected (not manually edited), use the coords directly.
-    // Only geocode when the user has typed a custom address.
     if (locationIsAutoDetected && currentUserLoc) {
         lat = currentUserLoc.lat;
         lng = currentUserLoc.lng;
@@ -286,7 +473,7 @@ async function fetchRestaurants(filters) {
             lat = coords.lat;
             lng = coords.lng;
         }
-        // Geocode failed — fall back to last known GPS coords
+
         if (!lat && currentUserLoc) {
             lat = currentUserLoc.lat;
             lng = currentUserLoc.lng;
@@ -296,28 +483,73 @@ async function fetchRestaurants(filters) {
         lng = currentUserLoc.lng;
     }
 
-    if (!lat || !lng) {
-        throw new Error("Could not determine your location. Please enter an address manually.");
+    if (lat === null || lng === null) {
+        throw new Error('Could not determine your location. Please enter an address manually.');
     }
 
-    const params = new URLSearchParams({ lat, lng });
+    const params = new URLSearchParams({
+        lat: String(lat),
+        lng: String(lng),
+    });
+
     if (filters.cuisine && filters.cuisine !== 'any') {
         params.set('cuisine', filters.cuisine);
     }
     if (filters.distance) {
-        params.set('maxDistance', filters.distance * 1000); // km to meters
+        params.set('maxDistance', String(filters.distance * 1000));
     }
     if (filters.prices && filters.prices.length > 0) {
-        params.set('minPrice', Math.min(...filters.prices));
-        params.set('maxPrice', Math.max(...filters.prices));
+        params.set('minPrice', String(Math.min(...filters.prices)));
+        params.set('maxPrice', String(Math.max(...filters.prices)));
     }
     if (filters.openNow) {
         params.set('openNow', 'true');
     }
 
-    const res = await fetch(`/api/restaurants/search?${params.toString()}`);
-    if (!res.ok) throw new Error("Failed to fetch restaurants");
-
-    const data = await res.json();
+    const data = await apiRequest(`/api/restaurants/search?${params.toString()}`);
     return data.restaurants || [];
+}
+
+async function apiRequest(url, { method = 'GET', body, requiresAuth = false } = {}) {
+    const headers = {};
+
+    if (body !== undefined) {
+        headers['Content-Type'] = 'application/json';
+    }
+
+    if (requiresAuth) {
+        if (!authToken) {
+            throw new Error('Please log in first.');
+        }
+
+        headers.Authorization = `Bearer ${authToken}`;
+    }
+
+    const response = await fetch(url, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+    const payload = await response
+        .json()
+        .catch(() => ({ error: `Request failed with status ${response.status}` }));
+
+    if (!response.ok) {
+        if (response.status === 401 && requiresAuth) {
+            clearAuth();
+        }
+
+        throw new Error(payload.error || `Request failed with status ${response.status}`);
+    }
+
+    return payload;
+}
+
+function promptRequired(message) {
+    const value = window.prompt(message, '');
+    if (value === null) return null;
+
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
 }
