@@ -6,6 +6,11 @@ let authToken = null;
 let currentUser = null;
 let currentUserLoc = null;
 let locationIsAutoDetected = false;
+let lastSearchKey = null;
+let lastSearchResults = null;
+let lastSearchAt = 0;
+
+const SEARCH_RESULT_CACHE_TTL_MS = 3 * 60 * 1000;
 
 document.addEventListener('DOMContentLoaded', () => {
     hydrateAuth();
@@ -506,8 +511,36 @@ async function fetchRestaurants(filters) {
         params.set('openNow', 'true');
     }
 
-    const data = await apiRequest(`/api/restaurants/search?${params.toString()}`);
-    return data.restaurants || [];
+    const searchKey = params.toString();
+    const hasFreshCachedResults =
+        lastSearchKey === searchKey &&
+        Array.isArray(lastSearchResults) &&
+        lastSearchResults.length > 0 &&
+        Date.now() - lastSearchAt < SEARCH_RESULT_CACHE_TTL_MS;
+
+    if (hasFreshCachedResults) {
+        return lastSearchResults;
+    }
+
+    try {
+        const data = await apiRequest(`/api/restaurants/search?${searchKey}`);
+        lastSearchKey = searchKey;
+        lastSearchResults = data.restaurants || [];
+        lastSearchAt = Date.now();
+
+        return data.restaurants || [];
+    } catch (err) {
+        if (
+            lastSearchKey === searchKey &&
+            Array.isArray(lastSearchResults) &&
+            lastSearchResults.length > 0
+        ) {
+            showToast('Using your last restaurant list while search refreshes.');
+            return lastSearchResults;
+        }
+
+        throw err;
+    }
 }
 
 async function apiRequest(url, { method = 'GET', body, requiresAuth = false } = {}) {
