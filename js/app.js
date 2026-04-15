@@ -606,8 +606,7 @@ function displayWinner(restaurant) {
     resetWinnerSupplementaryUi();
 
     document.getElementById('res-name').innerText = restaurant.name;
-    document.getElementById('res-rating').innerText = restaurant.rating ? `${restaurant.rating} ⭐` : 'Rating unavailable';
-    document.getElementById('res-price').innerText = formatPriceLevel(restaurant.priceLevel);
+    renderRatingAndPrice(restaurant);
     document.getElementById('res-addr').innerText = restaurant.address || 'Address unavailable';
     document.getElementById('res-status').innerText = buildRestaurantStatus(restaurant);
     document.getElementById('res-status').classList.remove('hidden');
@@ -641,16 +640,17 @@ function resetWinnerSupplementaryUi() {
 async function hydrateWinnerDetails(restaurant) {
     let enrichedRestaurant = restaurant;
 
-    if (restaurant.source === 'google' && restaurant.placeId) {
-        const details = await getRestaurantDetails(restaurant.placeId);
-        if (details) {
-            enrichedRestaurant = {
-                ...restaurant,
-                ...details,
-            };
-            window.currentWinner = enrichedRestaurant;
-            applyWinnerDetails(enrichedRestaurant);
-        }
+    const details = await fetchWinnerDetails(restaurant);
+    if (details) {
+        enrichedRestaurant = {
+            ...restaurant,
+            ...details,
+            // Preserve our Haversine/route distance from the search result.
+            distanceMeters: restaurant.distanceMeters,
+            routeDistanceMeters: restaurant.routeDistanceMeters,
+        };
+        window.currentWinner = enrichedRestaurant;
+        applyWinnerDetails(enrichedRestaurant);
     }
 
     const route = await ensureRouteForRestaurant(enrichedRestaurant);
@@ -659,7 +659,44 @@ async function hydrateWinnerDetails(restaurant) {
     }
 }
 
+async function fetchWinnerDetails(restaurant) {
+    try {
+        if (restaurant.placeId) {
+            return await getRestaurantDetails(restaurant.placeId);
+        }
+        if (restaurant.name && Number.isFinite(restaurant.lat) && Number.isFinite(restaurant.lng)) {
+            return await getRestaurantDetailsByLocation(restaurant.name, restaurant.lat, restaurant.lng);
+        }
+    } catch (err) {
+        console.warn('Winner detail lookup failed', err.message);
+    }
+    return null;
+}
+
+async function getRestaurantDetailsByLocation(name, lat, lng) {
+    const key = `loc:${name}:${lat.toFixed(5)}:${lng.toFixed(5)}`;
+    if (!placeDetailsPromiseCache.has(key)) {
+        const params = new URLSearchParams({
+            name,
+            lat: String(lat),
+            lng: String(lng),
+        });
+        placeDetailsPromiseCache.set(
+            key,
+            apiRequest(`/api/restaurants/details?${params.toString()}`)
+                .then((data) => data.place || null)
+                .catch((err) => {
+                    placeDetailsPromiseCache.delete(key);
+                    throw err;
+                })
+        );
+    }
+    return placeDetailsPromiseCache.get(key);
+}
+
 function applyWinnerDetails(restaurant) {
+    renderRatingAndPrice(restaurant);
+
     if (restaurant.photoUrl) {
         document.getElementById('res-photo').src = restaurant.photoUrl;
         document.getElementById('res-photo-wrap').classList.remove('hidden');
@@ -717,16 +754,12 @@ function buildRestaurantStatus(restaurant) {
         statusParts.push(formatDistance(restaurant.distanceMeters));
     }
 
-    if (restaurant.source === 'fallback') {
-        statusParts.push('Backup place data');
-    }
-
     return statusParts.join(' • ') || 'Restaurant details ready';
 }
 
 function formatPriceLevel(priceLevel) {
     if (priceLevel === null || priceLevel === undefined) {
-        return 'Price unavailable';
+        return '';
     }
 
     if (priceLevel === 0) {
@@ -734,6 +767,21 @@ function formatPriceLevel(priceLevel) {
     }
 
     return Array(Math.max(1, parseInt(priceLevel, 10) || 1)).fill('$').join('');
+}
+
+function renderRatingAndPrice(restaurant) {
+    const ratingEl = document.getElementById('res-rating');
+    const priceEl = document.getElementById('res-price');
+    const sepEl = document.getElementById('res-details-sep');
+    const detailsEl = document.getElementById('res-details');
+
+    const ratingText = typeof restaurant.rating === 'number' ? `${restaurant.rating} ⭐` : '';
+    const priceText = formatPriceLevel(restaurant.priceLevel);
+
+    ratingEl.innerText = ratingText;
+    priceEl.innerText = priceText;
+    sepEl.classList.toggle('hidden', !(ratingText && priceText));
+    detailsEl.classList.toggle('hidden', !ratingText && !priceText);
 }
 
 function formatDistance(distanceMeters) {

@@ -1,4 +1,5 @@
 const {
+  findPlaceByNameAndLocation,
   getPlaceDetails,
   getPlacePhotoUrl,
   normalizePlaceId,
@@ -26,9 +27,19 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const placeId = req.query && req.query.placeId ? normalizePlaceId(req.query.placeId) : '';
+    const query = req.query || {};
+    let placeId = query.placeId ? normalizePlaceId(query.placeId) : '';
+
+    if (!placeId && query.name && query.lat && query.lng) {
+      const lat = parseFloat(query.lat);
+      const lng = parseFloat(query.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        placeId = await findPlaceByNameAndLocation(String(query.name), lat, lng);
+      }
+    }
+
     if (!placeId) {
-      return res.status(400).json({ error: 'placeId is required' });
+      return res.status(400).json({ error: 'placeId or name+lat+lng is required' });
     }
 
     const place = await getPlaceDetails(placeId);
