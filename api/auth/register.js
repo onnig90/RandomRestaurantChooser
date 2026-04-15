@@ -1,5 +1,6 @@
 const db = require('../../lib/db');
 const { hashPassword, signToken } = require('../../lib/auth');
+const { geocodeAddress, hasServerApiKey, validateAddress } = require('../../lib/googleMaps');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^\+[1-9]\d{6,14}$/;
@@ -29,13 +30,40 @@ module.exports = async function handler(req, res) {
       return res.status(409).json({ error: 'An account with that email already exists' });
     }
 
+    let normalizedLocation = location && String(location).trim() ? String(location).trim() : null;
+    if (normalizedLocation) {
+      const hasGoogleMapsServerKey = hasServerApiKey();
+      let validation = null;
+
+      try {
+        validation = await validateAddress(normalizedLocation);
+      } catch (err) {
+        console.warn('register address validation failed:', err.message);
+      }
+
+      try {
+        const geocodedLocation = await geocodeAddress(normalizedLocation);
+        if (hasGoogleMapsServerKey && !geocodedLocation && (!validation || !validation.location)) {
+          return res.status(400).json({ error: 'Please enter a valid location' });
+        }
+      } catch (err) {
+        if (hasGoogleMapsServerKey && (!validation || !validation.location)) {
+          return res.status(400).json({ error: 'Please enter a valid location' });
+        }
+      }
+
+      if (validation && validation.formattedAddress) {
+        normalizedLocation = validation.formattedAddress;
+      }
+    }
+
     const password_hash = await hashPassword(password);
 
     const result = await db.query(
       `INSERT INTO "user" (name, email, phone, location, password_hash)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id_user, name, email, phone, location`,
-      [name.trim(), email.toLowerCase(), phone || null, location || null, password_hash]
+      [name.trim(), email.toLowerCase(), phone || null, normalizedLocation, password_hash]
     );
 
     const user = result.rows[0];

@@ -29,9 +29,11 @@
             <div class="filter-group">
                 <label for="location-input">Location Request</label>
                 <div class="input-with-icon">
-                    <input type="text" id="location-input" placeholder="Detecting location..." />
+                    <input type="text" id="location-input" placeholder="Detecting location..." autocomplete="off" />
                     <span class="icon">📍</span>
                 </div>
+                <div id="location-validation" class="field-note hidden"></div>
+                <div id="location-autocomplete" class="autocomplete-list hidden" role="listbox" aria-label="Location suggestions"></div>
             </div>
             <div class="filter-group">
                 <label for="cuisine-select">Cuisine</label>
@@ -94,9 +96,17 @@
 
         <!-- Section 5 — Result Details Display -->
         <section class="result-display hidden" id="result-display">
+            <div id="res-photo-wrap" class="result-photo hidden">
+                <img id="res-photo" alt="Restaurant preview" />
+            </div>
             <h2 id="res-name">Restaurant Name</h2>
             <p id="res-details"><span id="res-rating">4.5 ⭐</span>  •  <span id="res-price">$$$</span></p>
             <p id="res-addr">123 Main St, City</p>
+            <p id="res-status" class="result-meta hidden"></p>
+            <p id="res-travel" class="result-meta hidden"></p>
+            <a id="res-website" class="result-link hidden" target="_blank" rel="noreferrer">Visit website</a>
+            <p id="res-phone" class="result-meta hidden"></p>
+            <div id="res-hours" class="hours-list hidden"></div>
             
             <div class="result-actions">
                 <button id="btn-share" class="btn btn-primary">Share with your friends</button>
@@ -112,7 +122,9 @@
 
         <!-- Section 6 — Map Widget -->
         <section class="map-section hidden" id="map-section">
-            <iframe id="map-widget" class="map-container" title="Restaurant location preview" loading="lazy"></iframe>
+            <div id="route-summary" class="route-summary hidden"></div>
+            <div id="map-canvas" class="map-container hidden" aria-label="Interactive map"></div>
+            <iframe id="map-widget" class="map-container hidden" title="Restaurant location preview" loading="lazy"></iframe>
             <a id="btn-open-itinerary" target="_blank" href="#" class="btn btn-outline map-cta">Open itinerary in Maps</a>
         </section>
         

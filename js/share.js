@@ -29,7 +29,10 @@ function shareRestaurant(restaurant) {
   });
   if (restaurant.rating != null)     params.set('rating', restaurant.rating);
   if (restaurant.priceLevel != null) params.set('priceLevel', restaurant.priceLevel);
+  if (restaurant.placeId)            params.set('placeId', restaurant.placeId);
   if (restaurant.place_id)           params.set('place_id', restaurant.place_id);
+  if (restaurant.lat != null)        params.set('lat', restaurant.lat);
+  if (restaurant.lng != null)        params.set('lng', restaurant.lng);
 
   const shareUrl = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
   const shareText = `Let's eat at ${restaurant.name}!`;
@@ -65,6 +68,9 @@ function getSharedRestaurant() {
     address:    params.get('address'),
     rating:     params.get('rating')     ? parseFloat(params.get('rating'))     : null,
     priceLevel: params.get('priceLevel') ? parseInt(params.get('priceLevel'), 10) : null,
-    place_id:   params.get('place_id')   || null,
+    placeId:    params.get('placeId')    || params.get('place_id') || null,
+    place_id:   params.get('place_id')   || params.get('placeId') || null,
+    lat:        params.get('lat')        ? parseFloat(params.get('lat')) : null,
+    lng:        params.get('lng')        ? parseFloat(params.get('lng')) : null,
   };
 }

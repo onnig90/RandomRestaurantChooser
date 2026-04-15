@@ -1,5 +1,7 @@
 const AUTH_TOKEN_KEY = 'rrc_auth_token';
 const AUTH_USER_KEY = 'rrc_auth_user';
+const SEARCH_RESULT_CACHE_TTL_MS = 3 * 60 * 1000;
+const AUTOCOMPLETE_DEBOUNCE_MS = 250;
 
 let isGuest = true;
 let authToken = null;
@@ -10,34 +12,29 @@ let lastUiSearchKey = null;
 let lastSearchKey = null;
 let lastSearchResults = null;
 let lastSearchAt = 0;
-const geocodeCache = new Map();
-
-const SEARCH_RESULT_CACHE_TTL_MS = 3 * 60 * 1000;
+let lastResolvedOrigin = null;
+let currentLocationSelection = null;
+let autocompleteTimer = null;
+let autocompleteRequestId = 0;
+let lastAutocompletePredictions = [];
+let placeDetailsPromiseCache = new Map();
+let routePromiseCache = new Map();
+let geocodeCache = new Map();
+let publicConfigPromise = null;
+let googleMapsPromise = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     hydrateAuth();
     initFilters();
     initAuthBar();
     initLocation();
+    initLocationAutocomplete();
 
     document.getElementById('btn-spin').addEventListener('click', onSpinClicked);
     document.getElementById('btn-auth-guest').addEventListener('click', onAuthGuestClicked);
     document.getElementById('btn-auth-user').addEventListener('click', onLoadFiltersClicked);
-    document.getElementById('btn-itinerary').addEventListener('click', () => {
-        const mapSection = document.getElementById('map-section');
-        mapSection.classList.remove('hidden');
-        setTimeout(() => mapSection.classList.add('show'), 10);
-        mapSection.scrollIntoView({ behavior: 'smooth' });
-    });
-
-    document.getElementById('btn-share').addEventListener('click', () => {
-        if (window.currentWinner && typeof shareRestaurant === 'function') {
-            shareRestaurant(window.currentWinner);
-        } else {
-            showToast('Spin the wheel first to share a restaurant.');
-        }
-    });
-
+    document.getElementById('btn-itinerary').addEventListener('click', onItineraryClicked);
+    document.getElementById('btn-share').addEventListener('click', onShareClicked);
     document.getElementById('btn-signup-prompt').addEventListener('click', onAuthGuestClicked);
     document.getElementById('btn-save-filters').addEventListener('click', onSaveFiltersClicked);
 
@@ -49,6 +46,13 @@ document.addEventListener('DOMContentLoaded', () => {
         button.addEventListener('click', (event) => {
             event.currentTarget.classList.toggle('active');
         });
+    });
+
+    document.addEventListener('click', (event) => {
+        const autocompleteContainer = document.getElementById('location-autocomplete');
+        if (!autocompleteContainer.contains(event.target) && event.target.id !== 'location-input') {
+            hideAutocomplete();
+        }
     });
 });
 
@@ -138,6 +142,7 @@ function initLocation() {
 
     locationInput.addEventListener('input', () => {
         locationIsAutoDetected = false;
+        currentLocationSelection = null;
     });
 
     if (!navigator.geolocation) {
@@ -156,6 +161,7 @@ function initLocation() {
                 locationInput.value = location && location.displayName
                     ? location.displayName
                     : `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+                clearLocationValidation();
             } catch (err) {
                 console.error('Reverse geocoding failed', err);
                 locationInput.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
@@ -166,6 +172,111 @@ function initLocation() {
             showToast('Geolocation denied. Please enter address manually.');
         }
     );
+}
+
+function initLocationAutocomplete() {
+    const input = document.getElementById('location-input');
+
+    input.addEventListener('input', () => {
+        const query = input.value.trim();
+
+        if (autocompleteTimer) {
+            clearTimeout(autocompleteTimer);
+        }
+
+        if (query.length < 3 || locationIsAutoDetected) {
+            hideAutocomplete();
+            return;
+        }
+
+        autocompleteTimer = setTimeout(() => {
+            loadAutocompleteSuggestions(query).catch((err) => {
+                console.error('Autocomplete failed', err);
+                hideAutocomplete();
+            });
+        }, AUTOCOMPLETE_DEBOUNCE_MS);
+    });
+
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            hideAutocomplete();
+        }
+    });
+}
+
+async function loadAutocompleteSuggestions(query) {
+    const requestId = ++autocompleteRequestId;
+    const params = new URLSearchParams({ q: query });
+
+    if (currentUserLoc) {
+        params.set('lat', String(currentUserLoc.lat));
+        params.set('lng', String(currentUserLoc.lng));
+    }
+
+    const data = await apiRequest(`/api/location/autocomplete?${params.toString()}`);
+    if (requestId !== autocompleteRequestId) {
+        return;
+    }
+
+    lastAutocompletePredictions = data.predictions || [];
+    renderAutocomplete(lastAutocompletePredictions);
+}
+
+function renderAutocomplete(predictions) {
+    const container = document.getElementById('location-autocomplete');
+    container.innerHTML = '';
+
+    if (!predictions || predictions.length === 0) {
+        container.classList.add('hidden');
+        return;
+    }
+
+    predictions.slice(0, 5).forEach((prediction) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'autocomplete-item';
+        button.innerHTML = `
+            <span class="autocomplete-primary">${escapeHtml(prediction.primaryText)}</span>
+            <span class="autocomplete-secondary">${escapeHtml(prediction.secondaryText || prediction.fullText || '')}</span>
+        `;
+        button.addEventListener('click', () => {
+            selectAutocompletePrediction(prediction);
+        });
+        container.appendChild(button);
+    });
+
+    container.classList.remove('hidden');
+}
+
+function selectAutocompletePrediction(prediction) {
+    const input = document.getElementById('location-input');
+    const label = [prediction.primaryText, prediction.secondaryText].filter(Boolean).join(', ');
+
+    currentLocationSelection = {
+        placeId: prediction.placeId,
+        label: label || prediction.fullText,
+    };
+    input.value = currentLocationSelection.label;
+    clearLocationValidation();
+    hideAutocomplete();
+}
+
+function hideAutocomplete() {
+    const container = document.getElementById('location-autocomplete');
+    container.classList.add('hidden');
+    container.innerHTML = '';
+}
+
+function showLocationValidation(message) {
+    const note = document.getElementById('location-validation');
+    note.innerText = message;
+    note.classList.remove('hidden');
+}
+
+function clearLocationValidation() {
+    const note = document.getElementById('location-validation');
+    note.classList.add('hidden');
+    note.innerText = '';
 }
 
 async function onAuthGuestClicked() {
@@ -298,28 +409,47 @@ async function reverseGeocodeCoordinates(lat, lng) {
 async function geocodeAddress(address) {
     if (!address) return null;
 
-    const cacheKey = String(address).trim().toLowerCase();
+    const normalizedAddress = String(address).trim();
+    const cacheKey = currentLocationSelection && currentLocationSelection.placeId
+        ? `place:${currentLocationSelection.placeId}`
+        : `text:${normalizedAddress.toLowerCase()}`;
+
     if (geocodeCache.has(cacheKey)) {
         return geocodeCache.get(cacheKey);
     }
 
-    const coordMatch = address.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+    const coordMatch = normalizedAddress.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
     if (coordMatch) {
         const coordinates = {
             lat: parseFloat(coordMatch[1]),
             lng: parseFloat(coordMatch[2]),
-            displayName: address,
+            displayName: normalizedAddress,
+            placeId: null,
         };
         geocodeCache.set(cacheKey, coordinates);
         return coordinates;
     }
 
-    const params = new URLSearchParams({ q: address });
+    const params = new URLSearchParams();
+    if (currentLocationSelection && currentLocationSelection.placeId) {
+        params.set('placeId', currentLocationSelection.placeId);
+    } else {
+        params.set('q', normalizedAddress);
+    }
+
     const data = await apiRequest(`/api/location/geocode?${params.toString()}`);
     const location = data.location || null;
+
+    if (data.validation && data.validation.hasSuggestion && data.validation.suggestedAddress) {
+        showLocationValidation(`Using verified address: ${data.validation.suggestedAddress}`);
+    } else {
+        clearLocationValidation();
+    }
+
     if (location) {
         geocodeCache.set(cacheKey, location);
     }
+
     return location;
 }
 
@@ -355,13 +485,42 @@ async function onSpinClicked() {
     }
 }
 
+async function onItineraryClicked() {
+    if (!window.currentWinner) {
+        showToast('Spin the wheel first to build an itinerary.');
+        return;
+    }
+
+    const mapSection = document.getElementById('map-section');
+    mapSection.classList.remove('hidden');
+    setTimeout(() => mapSection.classList.add('show'), 10);
+    mapSection.scrollIntoView({ behavior: 'smooth' });
+
+    try {
+        await renderItinerary(window.currentWinner);
+    } catch (err) {
+        console.error('Itinerary rendering failed', err);
+        renderFallbackMap(window.currentWinner);
+    }
+}
+
+function onShareClicked() {
+    if (window.currentWinner && typeof shareRestaurant === 'function') {
+        shareRestaurant(window.currentWinner);
+    } else {
+        showToast('Spin the wheel first to share a restaurant.');
+    }
+}
+
 function createUiSearchKey(filters) {
     const activePrices = Array.isArray(filters.prices)
         ? [...filters.prices].sort((left, right) => left - right)
         : [];
     const locationKey = locationIsAutoDetected && currentUserLoc
         ? `geo:${currentUserLoc.lat.toFixed(4)},${currentUserLoc.lng.toFixed(4)}`
-        : `text:${String(filters.location || '').trim().toLowerCase()}`;
+        : currentLocationSelection && currentLocationSelection.placeId
+            ? `place:${currentLocationSelection.placeId}`
+            : `text:${String(filters.location || '').trim().toLowerCase()}`;
 
     return JSON.stringify({
         locationKey,
@@ -428,6 +587,8 @@ function applySavedFilter(filter) {
     if (!Number.isNaN(parsedPrice)) {
         setPriceButtonsUpTo(parsedPrice);
     }
+
+    lastUiSearchKey = null;
 }
 
 function setPriceButtonsUpTo(maxPrice) {
@@ -440,12 +601,14 @@ function setPriceButtonsUpTo(maxPrice) {
 function displayWinner(restaurant) {
     window.currentWinner = restaurant;
 
-    document.getElementById('res-name').innerText = restaurant.name;
-    document.getElementById('res-rating').innerText = `${restaurant.rating || 'N/A'} ⭐`;
+    resetWinnerSupplementaryUi();
 
-    const priceStr = Array(parseInt(restaurant.priceLevel, 10) || 1).fill('$').join('');
-    document.getElementById('res-price').innerText = priceStr;
+    document.getElementById('res-name').innerText = restaurant.name;
+    document.getElementById('res-rating').innerText = restaurant.rating ? `${restaurant.rating} ⭐` : 'Rating unavailable';
+    document.getElementById('res-price').innerText = formatPriceLevel(restaurant.priceLevel);
     document.getElementById('res-addr').innerText = restaurant.address || 'Address unavailable';
+    document.getElementById('res-status').innerText = buildRestaurantStatus(restaurant);
+    document.getElementById('res-status').classList.remove('hidden');
 
     refreshPostSpinPrompts();
 
@@ -453,36 +616,430 @@ function displayWinner(restaurant) {
     resultSection.classList.remove('hidden');
     setTimeout(() => resultSection.classList.add('show'), 50);
 
-    updateMapPreview(restaurant);
+    updateExternalItineraryLink(restaurant);
+    renderFallbackMap(restaurant);
 
-    if (restaurant.lat && restaurant.lng) {
-        document.getElementById(
-            'btn-open-itinerary'
-        ).href = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
-            `${restaurant.lat},${restaurant.lng}`
-        )}`;
+    hydrateWinnerDetails(restaurant).catch((err) => {
+        console.error('Winner enrichment failed', err);
+    });
+}
+
+function resetWinnerSupplementaryUi() {
+    document.getElementById('res-photo-wrap').classList.add('hidden');
+    document.getElementById('res-photo').removeAttribute('src');
+    document.getElementById('res-website').classList.add('hidden');
+    document.getElementById('res-phone').classList.add('hidden');
+    document.getElementById('res-hours').classList.add('hidden');
+    document.getElementById('res-hours').innerHTML = '';
+    document.getElementById('res-travel').classList.add('hidden');
+    document.getElementById('route-summary').classList.add('hidden');
+    document.getElementById('route-summary').innerText = '';
+}
+
+async function hydrateWinnerDetails(restaurant) {
+    let enrichedRestaurant = restaurant;
+
+    if (restaurant.source === 'google' && restaurant.placeId) {
+        const details = await getRestaurantDetails(restaurant.placeId);
+        if (details) {
+            enrichedRestaurant = {
+                ...restaurant,
+                ...details,
+            };
+            window.currentWinner = enrichedRestaurant;
+            applyWinnerDetails(enrichedRestaurant);
+        }
+    }
+
+    const route = await ensureRouteForRestaurant(enrichedRestaurant);
+    if (route) {
+        applyRouteSummary(route, enrichedRestaurant);
     }
 }
 
-function updateMapPreview(restaurant) {
+function applyWinnerDetails(restaurant) {
+    if (restaurant.photoUrl) {
+        document.getElementById('res-photo').src = restaurant.photoUrl;
+        document.getElementById('res-photo-wrap').classList.remove('hidden');
+    }
+
+    if (restaurant.website) {
+        const link = document.getElementById('res-website');
+        link.href = restaurant.website;
+        link.classList.remove('hidden');
+    }
+
+    if (restaurant.phone) {
+        const phone = document.getElementById('res-phone');
+        phone.innerText = restaurant.phone;
+        phone.classList.remove('hidden');
+    }
+
+    if (Array.isArray(restaurant.openingHoursText) && restaurant.openingHoursText.length > 0) {
+        const hours = document.getElementById('res-hours');
+        hours.innerHTML = restaurant.openingHoursText
+            .map((line) => `<p>${escapeHtml(line)}</p>`)
+            .join('');
+        hours.classList.remove('hidden');
+    }
+
+    document.getElementById('res-status').innerText = buildRestaurantStatus(restaurant);
+    updateExternalItineraryLink(restaurant);
+}
+
+function applyRouteSummary(route, restaurant) {
+    const summary = buildRouteSummary(route, restaurant);
+    if (!summary) return;
+
+    const travel = document.getElementById('res-travel');
+    travel.innerText = summary;
+    travel.classList.remove('hidden');
+
+    const routeSummary = document.getElementById('route-summary');
+    routeSummary.innerText = summary;
+    routeSummary.classList.remove('hidden');
+}
+
+function buildRestaurantStatus(restaurant) {
+    const statusParts = [];
+
+    if (restaurant.businessStatus === 'CLOSED_PERMANENTLY') {
+        statusParts.push('Permanently closed');
+    } else if (restaurant.isOpenNow === true) {
+        statusParts.push('Open now');
+    } else if (restaurant.isOpenNow === false) {
+        statusParts.push('Currently closed');
+    }
+
+    if (Number.isFinite(restaurant.distanceMeters)) {
+        statusParts.push(formatDistance(restaurant.distanceMeters));
+    }
+
+    if (restaurant.source === 'fallback') {
+        statusParts.push('Backup place data');
+    }
+
+    return statusParts.join(' • ') || 'Restaurant details ready';
+}
+
+function formatPriceLevel(priceLevel) {
+    if (priceLevel === null || priceLevel === undefined) {
+        return 'Price unavailable';
+    }
+
+    if (priceLevel === 0) {
+        return 'Free';
+    }
+
+    return Array(Math.max(1, parseInt(priceLevel, 10) || 1)).fill('$').join('');
+}
+
+function formatDistance(distanceMeters) {
+    if (!Number.isFinite(distanceMeters)) return '';
+    if (distanceMeters < 1000) {
+        return `${distanceMeters} m away`;
+    }
+
+    const distanceKm = distanceMeters / 1000;
+    return `${distanceKm >= 10 ? distanceKm.toFixed(0) : distanceKm.toFixed(1)} km away`;
+}
+
+function formatDuration(durationSeconds) {
+    if (!Number.isFinite(durationSeconds)) return '';
+
+    const minutes = Math.round(durationSeconds / 60);
+    if (minutes < 60) {
+        return `${minutes} min`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    return remainder > 0 ? `${hours} hr ${remainder} min` : `${hours} hr`;
+}
+
+function buildRouteSummary(route, restaurant) {
+    if (!route) return '';
+
+    const parts = [];
+    if (Number.isFinite(route.durationSeconds)) {
+        parts.push(`${formatDuration(route.durationSeconds)} drive`);
+    }
+    if (Number.isFinite(route.distanceMeters)) {
+        parts.push(formatDistance(route.distanceMeters));
+    } else if (Number.isFinite(restaurant.distanceMeters)) {
+        parts.push(formatDistance(restaurant.distanceMeters));
+    }
+
+    return parts.join(' • ');
+}
+
+function updateExternalItineraryLink(restaurant) {
+    const button = document.getElementById('btn-open-itinerary');
+    button.href = buildDirectionsUrl(restaurant);
+}
+
+function buildDirectionsUrl(restaurant) {
+    if (!restaurant || restaurant.lat === undefined || restaurant.lng === undefined) {
+        return '#';
+    }
+
+    const params = new URLSearchParams({
+        api: '1',
+        destination: `${restaurant.lat},${restaurant.lng}`,
+    });
+
+    if (lastResolvedOrigin && Number.isFinite(lastResolvedOrigin.lat) && Number.isFinite(lastResolvedOrigin.lng)) {
+        params.set('origin', `${lastResolvedOrigin.lat},${lastResolvedOrigin.lng}`);
+    }
+
+    return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+async function renderItinerary(restaurant) {
+    const route = await ensureRouteForRestaurant(restaurant);
+    if (route) {
+        applyRouteSummary(route, restaurant);
+    }
+
+    try {
+        const rendered = await renderGoogleMap(restaurant, route);
+        if (!rendered) {
+            renderFallbackMap(restaurant);
+        }
+    } catch (err) {
+        console.error('Google map render failed', err);
+        renderFallbackMap(restaurant);
+    }
+}
+
+async function renderGoogleMap(restaurant, route) {
+    const maps = await loadGoogleMaps();
+    if (!maps) {
+        return false;
+    }
+
+    const mapCanvas = document.getElementById('map-canvas');
     const mapFrame = document.getElementById('map-widget');
-    if (!mapFrame || !restaurant || restaurant.lat === undefined || restaurant.lng === undefined) {
+    mapFrame.classList.add('hidden');
+    mapCanvas.classList.remove('hidden');
+    mapCanvas.innerHTML = '';
+
+    const { Map } = await maps.importLibrary('maps');
+    const { AdvancedMarkerElement } = await maps.importLibrary('marker');
+
+    const center = {
+        lat: Number(restaurant.lat),
+        lng: Number(restaurant.lng),
+    };
+
+    const map = new Map(mapCanvas, {
+        center,
+        zoom: 13,
+        mapTypeControl: false,
+        fullscreenControl: false,
+        streetViewControl: false,
+    });
+
+    const bounds = new google.maps.LatLngBounds();
+
+    if (lastResolvedOrigin && Number.isFinite(lastResolvedOrigin.lat) && Number.isFinite(lastResolvedOrigin.lng)) {
+        const originPosition = {
+            lat: Number(lastResolvedOrigin.lat),
+            lng: Number(lastResolvedOrigin.lng),
+        };
+        new AdvancedMarkerElement({
+            map,
+            position: originPosition,
+            title: 'Starting point',
+        });
+        bounds.extend(originPosition);
+    }
+
+    new AdvancedMarkerElement({
+        map,
+        position: center,
+        title: restaurant.name,
+    });
+    bounds.extend(center);
+
+    if (route && Array.isArray(route.polyline) && route.polyline.length > 1) {
+        const polyline = new google.maps.Polyline({
+            path: route.polyline.map((point) => ({
+                lat: point.lat,
+                lng: point.lng,
+            })),
+            geodesic: true,
+            strokeColor: '#E8C547',
+            strokeOpacity: 0.9,
+            strokeWeight: 5,
+        });
+        polyline.setMap(map);
+        route.polyline.forEach((point) => bounds.extend(point));
+    }
+
+    if (!bounds.isEmpty()) {
+        map.fitBounds(bounds, 60);
+    }
+
+    return true;
+}
+
+function renderFallbackMap(restaurant) {
+    const mapCanvas = document.getElementById('map-canvas');
+    const mapFrame = document.getElementById('map-widget');
+    mapCanvas.classList.add('hidden');
+    mapFrame.classList.remove('hidden');
+
+    if (!Number.isFinite(restaurant.lat) || !Number.isFinite(restaurant.lng)) {
+        mapFrame.src = 'about:blank';
         return;
     }
 
-    const lat = Number(restaurant.lat);
-    const lng = Number(restaurant.lng);
-    const delta = 0.01;
-    const bbox = [
-        lng - delta,
-        lat - delta,
-        lng + delta,
-        lat + delta,
-    ].join('%2C');
+    loadPublicConfig()
+        .then((config) => {
+            if (
+                config.googleMapsBrowserApiKey &&
+                lastResolvedOrigin &&
+                Number.isFinite(lastResolvedOrigin.lat) &&
+                Number.isFinite(lastResolvedOrigin.lng) &&
+                Number.isFinite(restaurant.lat) &&
+                Number.isFinite(restaurant.lng)
+            ) {
+                const params = new URLSearchParams({
+                    key: config.googleMapsBrowserApiKey,
+                    origin: `${lastResolvedOrigin.lat},${lastResolvedOrigin.lng}`,
+                    destination: `${restaurant.lat},${restaurant.lng}`,
+                    mode: 'driving',
+                });
+                mapFrame.src = `https://www.google.com/maps/embed/v1/directions?${params.toString()}`;
+                return;
+            }
 
-    mapFrame.src =
-        `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}` +
-        `&layer=mapnik&marker=${lat}%2C${lng}`;
+            const destination = `${restaurant.lat},${restaurant.lng}`;
+            mapFrame.src = `https://www.google.com/maps?q=${encodeURIComponent(destination)}&z=15&output=embed`;
+        })
+        .catch((err) => {
+            console.error('Fallback map config failed', err);
+            const destination = `${restaurant.lat},${restaurant.lng}`;
+            mapFrame.src = `https://www.google.com/maps?q=${encodeURIComponent(destination)}&z=15&output=embed`;
+        });
+}
+
+async function getRestaurantDetails(placeId) {
+    if (!placeId) return null;
+    if (!placeDetailsPromiseCache.has(placeId)) {
+        placeDetailsPromiseCache.set(
+            placeId,
+            apiRequest(`/api/restaurants/details?placeId=${encodeURIComponent(placeId)}`)
+                .then((data) => data.place || null)
+                .catch((err) => {
+                    placeDetailsPromiseCache.delete(placeId);
+                    throw err;
+                })
+        );
+    }
+
+    return placeDetailsPromiseCache.get(placeId);
+}
+
+async function ensureRouteForRestaurant(restaurant) {
+    if (!restaurant || !lastResolvedOrigin) {
+        return null;
+    }
+
+    const routeKey = [
+        lastResolvedOrigin.lat,
+        lastResolvedOrigin.lng,
+        restaurant.placeId || 'fallback',
+        restaurant.lat,
+        restaurant.lng,
+    ].join(':');
+
+    if (!routePromiseCache.has(routeKey)) {
+        const params = new URLSearchParams({
+            originLat: String(lastResolvedOrigin.lat),
+            originLng: String(lastResolvedOrigin.lng),
+            travelMode: 'DRIVE',
+        });
+
+        if (restaurant.placeId) {
+            params.set('placeId', restaurant.placeId);
+        }
+        if (Number.isFinite(restaurant.lat) && Number.isFinite(restaurant.lng)) {
+            params.set('destinationLat', String(restaurant.lat));
+            params.set('destinationLng', String(restaurant.lng));
+        }
+
+        routePromiseCache.set(
+            routeKey,
+            apiRequest(`/api/restaurants/route?${params.toString()}`)
+                .then((data) => data.route || null)
+                .catch((err) => {
+                    routePromiseCache.delete(routeKey);
+                    throw err;
+                })
+        );
+    }
+
+    try {
+        return await routePromiseCache.get(routeKey);
+    } catch (err) {
+        console.warn('Route lookup failed', err.message);
+        return null;
+    }
+}
+
+async function loadPublicConfig() {
+    if (!publicConfigPromise) {
+        publicConfigPromise = apiRequest('/api/config/public')
+            .catch((err) => {
+                publicConfigPromise = null;
+                throw err;
+            });
+    }
+
+    return publicConfigPromise;
+}
+
+async function loadGoogleMaps() {
+    if (window.google && window.google.maps) {
+        return window.google.maps;
+    }
+
+    if (!googleMapsPromise) {
+        googleMapsPromise = loadPublicConfig()
+            .then((config) => {
+                if (!config.googleMapsBrowserApiKey) {
+                    return null;
+                }
+
+                return new Promise((resolve, reject) => {
+                    const existing = document.getElementById('google-maps-js');
+                    if (existing) {
+                        existing.addEventListener('load', () => resolve(window.google.maps));
+                        existing.addEventListener('error', reject);
+                        return;
+                    }
+
+                    const script = document.createElement('script');
+                    script.id = 'google-maps-js';
+                    script.async = true;
+                    script.src =
+                        `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
+                            config.googleMapsBrowserApiKey
+                        )}&v=weekly`;
+                    script.addEventListener('load', () => resolve(window.google.maps));
+                    script.addEventListener('error', reject);
+                    document.head.appendChild(script);
+                });
+            })
+            .catch((err) => {
+                googleMapsPromise = null;
+                throw err;
+            });
+    }
+
+    return googleMapsPromise;
 }
 
 function showToast(message) {
@@ -508,35 +1065,16 @@ async function fetchRestaurants(filters, uiSearchKey) {
         return lastSearchResults;
     }
 
-    let lat = null;
-    let lng = null;
-
-    if (locationIsAutoDetected && currentUserLoc) {
-        lat = currentUserLoc.lat;
-        lng = currentUserLoc.lng;
-    } else if (filters.location) {
-        const coords = await geocodeAddress(filters.location);
-        if (coords) {
-            lat = coords.lat;
-            lng = coords.lng;
-        }
-
-        if (!lat && currentUserLoc) {
-            lat = currentUserLoc.lat;
-            lng = currentUserLoc.lng;
-        }
-    } else if (currentUserLoc) {
-        lat = currentUserLoc.lat;
-        lng = currentUserLoc.lng;
-    }
-
-    if (lat === null || lng === null) {
+    const resolvedOrigin = await resolveCurrentOrigin(filters);
+    if (!resolvedOrigin) {
         throw new Error('Could not determine your location. Please enter an address manually.');
     }
 
+    lastResolvedOrigin = resolvedOrigin;
+
     const params = new URLSearchParams({
-        lat: String(lat),
-        lng: String(lng),
+        lat: String(resolvedOrigin.lat),
+        lng: String(resolvedOrigin.lng),
     });
 
     if (filters.cuisine && filters.cuisine !== 'any') {
@@ -586,6 +1124,35 @@ async function fetchRestaurants(filters, uiSearchKey) {
     }
 }
 
+async function resolveCurrentOrigin(filters) {
+    if (locationIsAutoDetected && currentUserLoc) {
+        return {
+            lat: currentUserLoc.lat,
+            lng: currentUserLoc.lng,
+            displayName: document.getElementById('location-input').value || 'Current location',
+            placeId: null,
+        };
+    }
+
+    if (filters.location) {
+        const coords = await geocodeAddress(filters.location);
+        if (coords) {
+            return coords;
+        }
+    }
+
+    if (currentUserLoc) {
+        return {
+            lat: currentUserLoc.lat,
+            lng: currentUserLoc.lng,
+            displayName: document.getElementById('location-input').value || 'Current location',
+            placeId: null,
+        };
+    }
+
+    return null;
+}
+
 async function apiRequest(url, { method = 'GET', body, requiresAuth = false } = {}) {
     const headers = {};
 
@@ -628,4 +1195,13 @@ function promptRequired(message) {
 
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+}
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
